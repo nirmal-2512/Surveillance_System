@@ -1,156 +1,217 @@
 import { useEffect, useState, useRef } from "react";
-
-import { Camera, Video, Dot } from "lucide-react";
+import { useAuth } from "../context/AuthContext.jsx";
 
 export default function Dashboard() {
-  const [recording, setRecording] = useState(false);
-  const [videoURL, setVideoURL] = useState(null);
-  const mediaRecorderRef = useRef(null);
-  const streamRef = useRef(null);
-  const videoRef = useRef(null);
-  const recordedChunks = useRef([]);
   const [devices, setDevices] = useState([]);
   const [videos, setVideos] = useState([]);
-  const [totalStorage, setTotalStorage] = useState(0);
+  const [isRecording, setIsRecording] = useState(false);
+  const [storageUsed, setStorageUsed] = useState(0);
+  const [selectedDevice, setSelectedDevice] = useState("");
+
+  const videoRef = useRef(null);
+  const [cameraReady, setCameraReady] = useState(false);
+  const streamRef = useRef(null);
+  const recorderRef = useRef(null);
+  const chunksRef = useRef([]);
+  const { token } = useAuth();
+
+  useEffect(() => {
+    // load devices and videos, start camera
+    fetchDevices();
+    fetchVideos();
+    startCamera();
+  }, []);
 
   const fetchDevices = async () => {
-    const res = await fetch("/api/devices", {
-      headers: {
-        Authorization: `Bearer ${localStorage.getItem("token")}`,
-      },
-    });
-    const data = await res.json();
-    setDevices(data);
+    try {
+      const res = await fetch("/api/devices", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error("Failed to fetch devices");
+      const data = await res.json();
+      setDevices(data);
+    } catch (err) {
+      console.error(err);
+    }
   };
 
   const fetchVideos = async () => {
-    const res = await fetch("/api/videos", {
-      headers: {
-        Authorization: `Bearer ${localStorage.getItem("token")}`,
-      },
-    });
-    const data = await res.json();
-    setVideos(data);
-
-    // Example: Calculate total storage (assuming ~50MB/video or store size in video)
-
-    useEffect(() => {
-      fetchDevices();
-      fetchVideos();
-    }, []);
-    const sizePerVideoMB = 50;
-    setTotalStorage(data.length * sizePerVideoMB);
+    try {
+      const res = await fetch("/api/videos/user", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error("Failed to fetch videos");
+      const list = await res.json();
+      setVideos(list);
+      const totalMB = list.reduce((sum, v) => sum + (v.sizeMB || 1.5), 0);
+      setStorageUsed(totalMB);
+    } catch (err) {
+      console.error(err);
+    }
   };
 
-  const startRecording = async () => {
-    const stream = await navigator.mediaDevices.getUserMedia({
-      video: true,
-      audio: true,
+  const startCamera = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: true,
+        audio: true,
+      });
+      console.log("🎥 Camera stream ready:", stream);
+      streamRef.current = stream;
+      videoRef.current.srcObject = stream;
+      setCameraReady(true);
+    } catch (err) {
+      console.error("Camera error:", err);
+    }
+  };
+
+  const startRecording = () => {
+    console.log(
+      "🔴 startRecording called, cameraReady:",
+      cameraReady,
+      "streamRef:",
+      streamRef.current
+    );
+    if (!selectedDevice) return alert("Select a device first");
+    if (!streamRef.current) return alert("Camera not initialized");
+
+    chunksRef.current = [];
+    const recorder = new MediaRecorder(streamRef.current, {
+      mimeType: "video/webm",
     });
-    streamRef.current = stream;
-    videoRef.current.srcObject = stream;
-
-    const mediaRecorder = new MediaRecorder(stream);
-    mediaRecorderRef.current = mediaRecorder;
-
-    mediaRecorder.ondataavailable = (event) => {
-      if (event.data.size > 0) recordedChunks.current.push(event.data);
+    recorder.ondataavailable = (e) => {
+      console.log("📦 chunk:", e.data);
+      chunksRef.current.push(e.data);
     };
+    recorder.onstart = () => console.log("▶️ recorder started");
+    recorder.onstop = () =>
+      console.log("⏹ recorder stopped, chunks:", chunksRef.current.length);
+    recorder.onstop = handleRecordingStop;
+    recorder.start();
+    recorderRef.current = recorder;
+    setIsRecording(true);
+  };
 
-    mediaRecorder.onstop = () => {
-      const blob = new Blob(recordedChunks.current, { type: "video/webm" });
-      const url = URL.createObjectURL(blob);
-      setVideoURL(url);
-      recordedChunks.current = [];
-    };
+  const handleRecordingStop = async () => {
+    const blob = new Blob(chunksRef.current, { type: "video/webm" });
+    const fd = new FormData();
+    fd.append("video", blob, `recording-${Date.now()}.webm`);
+    fd.append("deviceId", selectedDevice);
 
-    mediaRecorder.start();
-    setRecording(true);
+    try {
+      const res = await fetch("/api/videos/upload", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: fd,
+      });
+      if (!res.ok) throw new Error("Upload failed");
+      await fetchVideos();
+    } catch (err) {
+      console.error("Upload error:", err);
+      alert("Video upload failed");
+    } finally {
+      setIsRecording(false);
+    }
   };
 
   const stopRecording = () => {
-    mediaRecorderRef.current.stop();
-    streamRef.current.getTracks().forEach((track) => track.stop());
-    setRecording(false);
+    if (recorderRef.current && recorderRef.current.state !== "inactive") {
+      recorderRef.current.stop();
+    }
   };
 
   return (
-    <div className="p-4 text-white flex flex-col text-center justify-center text-center">
-      <h1 className="text-3xl font-bold mb-6 self-center w-fit">Dashboard</h1>
-      <div className="w-full flex">
-        <section className="mb-6 flex flex-col w-1/2 justify-center">
-          <h2 className="text-2xl mb-2">Connected Devices</h2>
-          <ul className="bg-[#0B192C] p-4 rounded">
-            {devices.map((device) => (
-              <li key={device._id} className="mb-2 flex justify-between">
-                <span>{device.name}</span>
-                <span
-                  className={
-                    device.status === "online"
-                      ? "text-green-400"
-                      : "text-red-400"
-                  }
-                >
-                  {device.status}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </section>
+    <div className="text-white bg-[#0B192C] min-h-screen p-6">
+      <h1 className="text-2xl font-bold mb-4">Dashboard</h1>
 
-        <section className="mb-6 flex flex-col w-1/2">
-          <h2 className="text-2xl mb-2">Recorded Videos</h2>
-          <p className="mb-2">Total Videos: {videos.length}</p>
-          <p className="mb-4">Estimated Storage Used: {totalStorage} MB</p>
-
-          <ul className="bg-[#0B192C] p-4 rounded space-y-3">
-            {videos.map((video) => (
-              <li key={video._id} className="border-b pb-2">
-                <p>Device: {video.device?.name || "N/A"}</p>
-                <p>Recorded at: {new Date(video.timestamp).toLocaleString()}</p>
-                <video
-                  src={video.url}
-                  controls
-                  className="mt-2 w-full max-w-md rounded"
-                />
-              </li>
-            ))}
-          </ul>
-        </section>
+      <div className="mb-4">
+        <label htmlFor="device-select" className="mr-2">
+          Select Device:
+        </label>
+        <select
+          id="device-select"
+          className="p-2 bg-[#1E3E62] rounded"
+          value={selectedDevice}
+          onChange={(e) => setSelectedDevice(e.target.value)}
+        >
+          <option value="" disabled>
+            -- select device --
+          </option>
+          {devices.map((d) => (
+            <option key={d._id} value={d._id}>
+              {d.name} ({d.status})
+            </option>
+          ))}
+        </select>
       </div>
-      <div className="p-4 text-white">
-        <h2 className="text-xl mb-4">Live Camera Feed & Recording</h2>
 
-        <video
-          ref={videoRef}
-          autoPlay
-          className="w-full h-64 bg-black mb-4 rounded-xl"
-        />
-
-        <div className="space-x-2">
-          {!recording ? (
-            <button
-              onClick={startRecording}
-              className="bg-[#FF6500] px-4 py-2 rounded"
-            >
-              Start Recording
-            </button>
-          ) : (
-            <button
-              onClick={stopRecording}
-              className="bg-red-600 px-4 py-2 rounded"
-            >
-              Stop Recording
-            </button>
-          )}
+      <div className="flex gap-6">
+        <div className="flex-1 bg-[#1E3E62] p-4 rounded-lg">
+          <video
+            ref={videoRef}
+            autoPlay
+            muted
+            className="w-full h-72 bg-black rounded"
+          />
+          <div className="mt-4 flex justify-end">
+            {!isRecording ? (
+              <button
+                onClick={startRecording}
+                disabled={!cameraReady}
+                className={`px-4 py-2 rounded ${
+                  cameraReady
+                    ? "bg-[#FF6500] hover:bg-orange-600"
+                    : "bg-gray-600 cursor-not-allowed"
+                }`}
+              >
+                Start Recording
+              </button>
+            ) : (
+              <button
+                onClick={stopRecording}
+                className="bg-red-600 px-4 py-2 rounded"
+              >
+                Stop Recording
+              </button>
+            )}
+          </div>
         </div>
 
-        {videoURL && (
-          <div className="mt-4">
-            <h3 className="mb-2">Recorded Video:</h3>
-            <video src={videoURL} controls className="w-full rounded-lg" />
+        <div className="w-1/3 space-y-4">
+          <div className="bg-[#1E3E62] p-4 rounded-xl">
+            <h2 className="font-semibold text-lg mb-2">Connected Devices</h2>
+            {devices.map((d) => (
+              <div key={d._id} className="py-2 border-b border-gray-700">
+                <p className="font-medium">{d.name}</p>
+                <p
+                  className={`text-sm ${
+                    d.status === "online" ? "text-green-400" : "text-red-400"
+                  }`}
+                >
+                  Status: {d.status}
+                </p>
+              </div>
+            ))}
           </div>
-        )}
+
+          <div className="bg-[#1E3E62] p-4 rounded-xl">
+            <h2 className="font-semibold text-lg mb-2">Latest Recordings</h2>
+            {videos
+              .slice(-3)
+              .reverse()
+              .map((v) => (
+                <video
+                  key={v._id}
+                  src={v.path}
+                  controls
+                  className="w-full rounded mb-2"
+                />
+              ))}
+            <p className="text-sm mt-2">
+              Total: {videos.length} | Storage: {storageUsed.toFixed(2)} MB
+            </p>
+          </div>
+        </div>
       </div>
     </div>
   );

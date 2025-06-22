@@ -42,6 +42,15 @@ export default function Login() {
 
       alert("Logged in successfully");
 
+      await fetch("/api/devices", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${localStorage.getItem("token")}`,
+        },
+        body: JSON.stringify({ name: formData.deviceName }),
+      });
+
       alert(`${isLogin ? "Logged in" : "Registered"} successfully`);
       if (isLogin) {
         navigate("/dashboard");
@@ -104,6 +113,16 @@ export default function Login() {
           className="w-full p-2 rounded bg-[#0B192C] border border-gray-600"
           required
         />
+        <input
+          type="text"
+          name="deviceName"
+          placeholder="Device Name"
+          onChange={handleChange}
+          value={formData.deviceName || ""}
+          className="w-full p-2 rounded bg-[#0B192C] border border-gray-600"
+          required
+        />
+
         <button
           type="submit"
           className="w-full bg-[#FF6500] text-black p-2 rounded"

@@ -8,7 +8,6 @@ import videoRoutes from './routes/videoRoutes.js';
 
 
 
-
 dotenv.config();
 const app = express();
 
@@ -22,6 +21,7 @@ app.use(express.json());
 app.use('/api/auth', authRoutes);
 app.use('/api/devices', deviceRoutes);
 app.use('/api/videos', videoRoutes);
+app.use('/uploads/videos', express.static('uploads/videos'));
 
 const PORT = process.env.PORT;
 
